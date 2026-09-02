@@ -5,7 +5,9 @@ using DiscordHealth.Runtime.Changes;
 
 namespace DiscordHealth.Runtime.DiscordAdapter;
 
-internal sealed class DiscordApprovedChangeExecutor(IDiscordClientAccessor accessor) : IApprovedChangeExecutor
+internal sealed class DiscordApprovedChangeExecutor(
+    IDiscordClientAccessor accessor,
+    ILogger<DiscordApprovedChangeExecutor> logger) : IApprovedChangeExecutor
 {
     public async Task<ChangeSpecification> CreateSpecificationAsync(
         ulong guildId,
@@ -14,6 +16,7 @@ internal sealed class DiscordApprovedChangeExecutor(IDiscordClientAccessor acces
     {
         var guild = GetGuild(guildId);
         var arguments = request.Arguments;
+        EnforceSelfProtection(guild, request.Action, request.ResourceId, arguments);
         ChangeSpecification specification = request.Action switch
         {
             ChangeActionType.CreateTextChannel => CreateResource(
@@ -107,6 +110,7 @@ internal sealed class DiscordApprovedChangeExecutor(IDiscordClientAccessor acces
     public async Task ExecuteAsync(ulong guildId, ChangeSpecification change, CancellationToken cancellationToken = default)
     {
         var guild = GetGuild(guildId);
+        EnforceSelfProtection(guild, change.Action, change.ResourceId, change.Arguments);
         EnsurePermission(guild, change.RequiredDiscordPermission);
         var requestOptions = new RequestOptions { AuditLogReason = $"Quorum approved action {change.Action}" };
 
@@ -514,5 +518,32 @@ internal sealed class DiscordApprovedChangeExecutor(IDiscordClientAccessor acces
             _ => false
         };
         if (!allowed) throw new UnauthorizedAccessException($"Quorum lacks {permission}.");
+    }
+
+    private void EnforceSelfProtection(
+        SocketGuild guild,
+        ChangeActionType action,
+        ulong resourceId,
+        IReadOnlyDictionary<string, string>? arguments)
+    {
+        try
+        {
+            QuorumSelfProtectionPolicy.Validate(
+                action,
+                resourceId,
+                arguments,
+                guild.Id,
+                guild.CurrentUser.Id,
+                guild.CurrentUser.Roles.Select(role => role.Id).ToArray());
+        }
+        catch (UnauthorizedAccessException)
+        {
+            logger.LogWarning(
+                "Blocked Quorum self-targeting action {Action} in guild {GuildId} for resource {ResourceId}.",
+                action,
+                guild.Id,
+                resourceId);
+            throw;
+        }
     }
 }

@@ -127,6 +127,8 @@ docker compose up -d
 
 Approval cards appear in the invoking chat. Approvers must be administrators. Proposals expire, reject duplicate approval, optionally prevent self-approval, compare the current value with the proposed precondition, execute only the typed action, and verify the resulting Discord value.
 
+Quorum also enforces a non-approvable self-protection boundary. It refuses to propose or execute role-permission changes, role membership changes, channel overwrites, or moderation actions targeting its own bot account, its assigned roles, or `@everyone`. These attempts are security-warning events in the runtime log. Change Quorum's own access directly in Discord instead.
+
 Stop the container:
 
 ```powershell

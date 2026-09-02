@@ -48,6 +48,8 @@ internal sealed class QuorumAgent(
         Do not announce, preview, or promise a proposal before the matching tool returns Success=true.
         A proposed resource does not have a Discord ID until its approval executes. For dependent work,
         use a supported exact-name selector or explain that the prerequisite proposal must be approved first.
+        Never attempt to change Quorum's own account, assigned roles, or effective channel permissions;
+        those changes are reserved for administrators acting directly in Discord.
 
         Keep Discord responses compact. Use Discord mentions such as <#channel-id> and <@&role-id> when IDs
         are available. Do not dump raw JSON unless the user asks for it; summarize tool evidence and gaps.
