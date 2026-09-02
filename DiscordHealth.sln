@@ -1,0 +1,24 @@
+Microsoft Visual Studio Solution File, Format Version 12.00
+# Visual Studio Version 17
+VisualStudioVersion = 17.0.31903.59
+MinimumVisualStudioVersion = 10.0.40219.1
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "DiscordHealth.Runtime", "src\DiscordHealth.Runtime\DiscordHealth.Runtime.csproj", "{48D8B645-B3F5-47F5-986A-196B4E1D02BD}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "DiscordHealth.Runtime.Tests", "tests\DiscordHealth.Runtime.Tests\DiscordHealth.Runtime.Tests.csproj", "{7A2DDA2E-D36B-4BF8-A179-428B71259C9E}"
+EndProject
+Global
+	GlobalSection(SolutionConfigurationPlatforms) = preSolution
+		Debug|Any CPU = Debug|Any CPU
+		Release|Any CPU = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(ProjectConfigurationPlatforms) = postSolution
+		{48D8B645-B3F5-47F5-986A-196B4E1D02BD}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{48D8B645-B3F5-47F5-986A-196B4E1D02BD}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{48D8B645-B3F5-47F5-986A-196B4E1D02BD}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{48D8B645-B3F5-47F5-986A-196B4E1D02BD}.Release|Any CPU.Build.0 = Release|Any CPU
+		{7A2DDA2E-D36B-4BF8-A179-428B71259C9E}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{7A2DDA2E-D36B-4BF8-A179-428B71259C9E}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{7A2DDA2E-D36B-4BF8-A179-428B71259C9E}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{7A2DDA2E-D36B-4BF8-A179-428B71259C9E}.Release|Any CPU.Build.0 = Release|Any CPU
+	EndGlobalSection
+EndGlobal

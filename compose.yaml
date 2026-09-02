@@ -1,0 +1,33 @@
+services:
+  quorum:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: quorum:local
+    environment:
+      Discord__Token: ${DISCORD_TOKEN:?Set DISCORD_TOKEN before starting Quorum}
+      # Optional: restrict slash-command registration to one development server.
+      Discord__GuildId: ${DISCORD_GUILD_ID:-}
+      Quorum__DataDirectory: /data
+      Agent__Enabled: ${QUORUM_AGENT_ENABLED:-false}
+      Agent__Provider: ${QUORUM_AGENT_PROVIDER:-OpenAI}
+      Agent__Endpoint: ${QUORUM_AGENT_ENDPOINT:-https://api.openai.com/v1}
+      Agent__ApiKey: ${QUORUM_AGENT_API_KEY:-}
+      Agent__Model: ${QUORUM_AGENT_MODEL:-gpt-4o-mini}
+      Quorum__Writes__Enabled: ${QUORUM_WRITES_ENABLED:-false}
+      Quorum__Writes__ApprovalTtlMinutes: ${QUORUM_APPROVAL_TTL_MINUTES:-30}
+      Quorum__Writes__AllowLowRiskSelfApproval: ${QUORUM_ALLOW_SELF_APPROVAL:-true}
+    init: true
+    restart: unless-stopped
+    read_only: true
+    volumes:
+      - quorum-data:/data
+    tmpfs:
+      - /tmp:size=16m,mode=1777
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+
+volumes:
+  quorum-data:
