@@ -19,6 +19,7 @@ Every invocation creates a tool catalog bound to the Discord interaction's serve
 Implemented read tools:
 
 - fresh configuration scan, immutable snapshot persistence, and drift comparison;
+- targeted server-scoped lookup of roles, channels, and categories by name, returning exact IDs without loading every configuration section;
 - segmented inspection of the guild overview, roles, channels and overwrites, emojis, stickers, scheduled events, voice state, bans, invites, integrations, webhooks, AutoMod, audit log, onboarding, welcome screen, and collector coverage;
 - deterministic security findings with severity/status filters;
 - effective role-permission explanation for a channel;
@@ -33,6 +34,8 @@ Implemented write-shaped tools include:
 - security/community: create/enable/disable/delete AutoMod keyword rules, update welcome-screen state/description, and update onboarding state/mode.
 
 Each tool creates the same generic typed proposal. Unsupported variants are reported as gaps and are never substituted with a different mutation.
+
+Role-targeting tools accept either a server-scoped exact role name or an ID. Permission-set tools accept canonical Discord permission names as well as raw bitsets. New text-channel proposals can target a category by exact name, including a category proposed in the same overhaul; approve and execute the category card before approving its dependent channel cards.
 
 ## Permission behavior
 

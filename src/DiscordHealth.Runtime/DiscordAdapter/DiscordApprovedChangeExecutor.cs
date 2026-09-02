@@ -117,7 +117,8 @@ internal sealed class DiscordApprovedChangeExecutor(IDiscordClientAccessor acces
                     Required(change.Arguments, "name"),
                     properties =>
                     {
-                        if (TryId(change.Arguments, "category_id", out var categoryId)) properties.CategoryId = categoryId;
+                        var categoryId = ResolveCategoryId(guild, change.Arguments);
+                        if (categoryId.HasValue) properties.CategoryId = categoryId;
                         if (change.Arguments?.TryGetValue("topic", out var topic) == true) properties.Topic = topic;
                         if (change.Arguments?.TryGetValue("nsfw", out var nsfw) == true && bool.TryParse(nsfw, out var isNsfw)) properties.IsNsfw = isNsfw;
                     },
@@ -250,8 +251,8 @@ internal sealed class DiscordApprovedChangeExecutor(IDiscordClientAccessor acces
                 var welcome = await guild.GetWelcomeScreenAsync();
                 await ((IGuild)guild).ModifyWelcomeScreenAsync(
                     bool.Parse(Required(change.Arguments, "enabled")),
-                    welcome.Channels.Select(x => new WelcomeScreenChannelProperties(x.Id, x.Description, x.Emoji)).ToArray(),
-                    change.Arguments?.GetValueOrDefault("description") ?? welcome.Description,
+                    welcome?.Channels.Select(x => new WelcomeScreenChannelProperties(x.Id, x.Description, x.Emoji)).ToArray() ?? [],
+                    change.Arguments?.GetValueOrDefault("description") ?? welcome?.Description,
                     requestOptions);
                 break;
             case ChangeActionType.UpdateOnboarding:
@@ -333,7 +334,7 @@ internal sealed class DiscordApprovedChangeExecutor(IDiscordClientAccessor acces
     {
         _ = DateTimeOffset.Parse(Required(arguments, "start"), System.Globalization.CultureInfo.InvariantCulture);
         _ = DateTimeOffset.Parse(Required(arguments, "end"), System.Globalization.CultureInfo.InvariantCulture);
-        return CreateResource(request.Action, "scheduled event", Required(arguments, "name"), "MANAGE_EVENTS", arguments);
+        return CreateResource(request.Action, "scheduled event", Required(arguments, "name"), "CREATE_EVENTS", arguments);
     }
 
     private static ChangeSpecification RoleOverwriteSpecification(
@@ -395,7 +396,7 @@ internal sealed class DiscordApprovedChangeExecutor(IDiscordClientAccessor acces
     {
         var welcome = await guild.GetWelcomeScreenAsync();
         return new(request.Action, "welcome screen", 0, "settings", WelcomeValue(guild, welcome),
-            $"{Required(arguments, "enabled")}|{arguments.GetValueOrDefault("description") ?? welcome.Description}",
+            $"{Required(arguments, "enabled")}|{arguments.GetValueOrDefault("description") ?? welcome?.Description}",
             "MANAGE_GUILD", "server welcome screen", arguments);
     }
 
@@ -428,8 +429,8 @@ internal sealed class DiscordApprovedChangeExecutor(IDiscordClientAccessor acces
         (await guild.GetAutoModRulesAsync()).SingleOrDefault(x => x.Id == ruleId)
         ?? throw new InvalidOperationException("AutoMod rule no longer exists or is inaccessible.");
 
-    private static string WelcomeValue(SocketGuild guild, WelcomeScreen welcome) =>
-        $"{guild.Features.HasFeature(GuildFeature.WelcomeScreenEnabled)}|{welcome.Description}";
+    private static string WelcomeValue(SocketGuild guild, WelcomeScreen? welcome) =>
+        $"{guild.Features.HasFeature(GuildFeature.WelcomeScreenEnabled)}|{welcome?.Description}";
 
     private static string OnboardingValue(IGuildOnboarding onboarding) =>
         $"{onboarding.IsEnabled}|{onboarding.Mode}";
@@ -477,6 +478,25 @@ internal sealed class DiscordApprovedChangeExecutor(IDiscordClientAccessor acces
         return arguments?.TryGetValue(key, out var text) == true && ulong.TryParse(text, out value);
     }
 
+    private static ulong? ResolveCategoryId(SocketGuild guild, IReadOnlyDictionary<string, string>? arguments)
+    {
+        if (arguments?.TryGetValue("category_id", out var idText) == true && !string.IsNullOrWhiteSpace(idText))
+        {
+            if (!ulong.TryParse(idText, out var id)) throw new ArgumentException("category_id must be a Discord ID.");
+            return guild.GetCategoryChannel(id)?.Id
+                ?? throw new InvalidOperationException("The selected category does not exist in this server.");
+        }
+        if (arguments?.TryGetValue("category_name", out var name) != true || string.IsNullOrWhiteSpace(name)) return null;
+
+        var matches = guild.CategoryChannels.Where(x => x.Name.Equals(name, StringComparison.OrdinalIgnoreCase)).ToArray();
+        return matches.Length switch
+        {
+            1 => matches[0].Id,
+            0 => throw new InvalidOperationException($"Category '{name}' does not exist yet. Approve its category proposal before approving this channel proposal."),
+            _ => throw new InvalidOperationException($"More than one category is named '{name}'. Use category_id instead.")
+        };
+    }
+
     private static void EnsurePermission(SocketGuild guild, string permission)
     {
         var allowed = permission switch
@@ -489,6 +509,7 @@ internal sealed class DiscordApprovedChangeExecutor(IDiscordClientAccessor acces
             "MANAGE_WEBHOOKS" => guild.CurrentUser.GuildPermissions.ManageWebhooks,
             "MANAGE_GUILD" => guild.CurrentUser.GuildPermissions.ManageGuild,
             "MANAGE_EVENTS" => guild.CurrentUser.GuildPermissions.ManageEvents,
+            "CREATE_EVENTS" => guild.CurrentUser.GuildPermissions.CreateEvents,
             "MANAGE_THREADS" => guild.CurrentUser.GuildPermissions.ManageThreads,
             _ => false
         };

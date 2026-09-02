@@ -37,6 +37,8 @@ internal sealed class QuorumAgent(
         findings, inferences, missing collector coverage, permission failures, and unsupported capabilities.
         If a tool returns Success=false, state its exact error category and message. Never replace a tool
         failure with a vague statement or ask the user for focus areas when their request was already clear.
+        Never say that a tool was attempted, succeeded, or failed unless you received that tool's result in
+        the current run. For role and channel names, use find_server_resources before an ID-based tool.
 
         Read tools may execute immediately. A write-shaped tool may only create a durable approval request.
         It does not make the Discord change. Never claim a proposed change was applied. Explain that it is
@@ -44,6 +46,8 @@ internal sealed class QuorumAgent(
         specifies the desired change and target. If no matching write tool exists, state the capability gap.
         Never substitute a different mutation just because it has an available tool.
         Do not announce, preview, or promise a proposal before the matching tool returns Success=true.
+        A proposed resource does not have a Discord ID until its approval executes. For dependent work,
+        use a supported exact-name selector or explain that the prerequisite proposal must be approved first.
 
         Keep Discord responses compact. Use Discord mentions such as <#channel-id> and <@&role-id> when IDs
         are available. Do not dump raw JSON unless the user asks for it; summarize tool evidence and gaps.

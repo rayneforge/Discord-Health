@@ -48,6 +48,7 @@ internal sealed class DiscordServerConfigurationReader(IDiscordClientAccessor ac
         var welcome = await CollectAsync("MANAGE_GUILD when disabled", at, async () =>
         {
             var x = await guild.GetWelcomeScreenAsync();
+            if (x is null) return new WelcomeScreenConfiguration(null, []);
             return new WelcomeScreenConfiguration(x.Description, x.Channels.Select(channel => new WelcomeChannelConfiguration(channel.Id, channel.Description, channel.Emoji?.ToString())).ToArray());
         });
 

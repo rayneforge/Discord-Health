@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.Text.Json;
+using Discord;
 using DiscordHealth.Runtime.Changes;
 using DiscordHealth.Runtime.ServerConfiguration;
 using DiscordHealth.Runtime.Tools;
@@ -68,6 +69,37 @@ internal sealed class QuorumAgentToolCatalog(
             "Read one segment of the latest snapshot. section must be one of: overview, roles, channels, emojis, stickers, events, voice, bans, invites, integrations, webhooks, automod, audit, onboarding, welcome, coverage. Collector status and permission gaps are included."),
 
         AIFunctionFactory.Create(
+            async (string resourceType, string query) => await ExecuteAsync("find_server_resources", guildId, requesterId, async () =>
+            {
+                var snapshot = await reads.GetLatestAsync(guildId);
+                var normalizedType = resourceType.Trim().ToLowerInvariant();
+                var normalizedQuery = query.Trim();
+                if (normalizedQuery.Length == 0) throw new ArgumentException("query cannot be empty.", nameof(query));
+                return normalizedType switch
+                {
+                    "role" or "roles" => snapshot.Roles.Data?
+                        .Where(x => x.Name.Contains(normalizedQuery, StringComparison.OrdinalIgnoreCase))
+                        .Take(25)
+                        .Select(x => new { Id = x.Id.ToString(), x.Name, Type = "role", x.Position, x.IsManaged })
+                        .ToArray() ?? [],
+                    "channel" or "channels" => snapshot.Channels.Data?
+                        .Where(x => x.Name.Contains(normalizedQuery, StringComparison.OrdinalIgnoreCase))
+                        .Take(25)
+                        .Select(x => new { Id = x.Id.ToString(), x.Name, x.Type, x.CategoryId })
+                        .ToArray() ?? [],
+                    "category" or "categories" => snapshot.Channels.Data?
+                        .Where(x => x.Type.Contains("Category", StringComparison.OrdinalIgnoreCase) &&
+                                    x.Name.Contains(normalizedQuery, StringComparison.OrdinalIgnoreCase))
+                        .Take(25)
+                        .Select(x => new { Id = x.Id.ToString(), x.Name, x.Type })
+                        .ToArray() ?? [],
+                    _ => throw new ArgumentException("resourceType must be role, channel, or category.", nameof(resourceType))
+                };
+            }),
+            "find_server_resources",
+            "Find server-scoped roles, channels, or categories by a specific name fragment and return their exact Discord IDs. Use before tools that target an existing resource; never guess an ID."),
+
+        AIFunctionFactory.Create(
             async (string? severity, string? status) => await ExecuteAsync("list_security_findings", guildId, requesterId, async () =>
             {
                 var findings = await reads.ListFindingsAsync(guildId);
@@ -84,8 +116,8 @@ internal sealed class QuorumAgentToolCatalog(
             {
                 return await permissions.ExplainRolePermissionAsync(
                     guildId,
-                    ParseDiscordId(roleId, nameof(roleId)),
-                    ParseDiscordId(channelId, nameof(channelId)),
+                    await ResolveRoleIdAsync(guildId, roleId),
+                    await ResolveChannelIdAsync(guildId, channelId),
                     permission);
             }),
             "explain_role_permission",
@@ -103,16 +135,19 @@ internal sealed class QuorumAgentToolCatalog(
             "WRITE-SHAPED TOOL. Create an approval request to change a text channel's slowmode. It never directly changes Discord. Use only when the user clearly asks for this exact change. channelId must be a string."),
 
         AIFunctionFactory.Create(
-            async (string name, string? categoryId, string? topic, bool? nsfw) => await ExecuteAsync("propose_create_text_channel", guildId, requesterId, async () =>
+            async (string name, string? categoryId, string? categoryName, string? topic, bool? nsfw) => await ExecuteAsync("propose_create_text_channel", guildId, requesterId, async () =>
             {
                 var arguments = new Dictionary<string, string> { ["name"] = name };
                 Add(arguments, "category_id", categoryId);
+                Add(arguments, "category_name", categoryName);
+                if (!string.IsNullOrWhiteSpace(categoryId) && !string.IsNullOrWhiteSpace(categoryName))
+                    throw new ArgumentException("Specify categoryId or categoryName, not both.");
                 Add(arguments, "topic", topic);
                 if (nsfw.HasValue) arguments["nsfw"] = nsfw.Value.ToString();
                 return await ProposeAsync(guildId, requesterId, approvalChannelId, new(ChangeActionType.CreateTextChannel, 0, arguments));
             }),
             "propose_create_text_channel",
-            "Create a same-chat approval request for a new Discord text channel. No channel is created before an administrator clicks Approve. categoryId is an optional Discord ID string."),
+            "Create a same-chat approval request for a new Discord text channel. No channel is created before approval. Use categoryId for an existing category or categoryName for an exact category name. categoryName may reference a pending category proposal, but that category card must be approved and executed before the channel card."),
 
         AIFunctionFactory.Create(
             async (string name) => await ExecuteAsync("propose_create_category", guildId, requesterId, async () =>
@@ -152,47 +187,47 @@ internal sealed class QuorumAgentToolCatalog(
             async (string name, string? permissions) => await ExecuteAsync("propose_create_role", guildId, requesterId, async () =>
             {
                 var arguments = new Dictionary<string, string> { ["name"] = name };
-                Add(arguments, "permissions", permissions);
+                if (!string.IsNullOrWhiteSpace(permissions)) arguments["permissions"] = NormalizeGuildPermissions(permissions);
                 return await ProposeAsync(guildId, requesterId, approvalChannelId, new(ChangeActionType.CreateRole, 0, arguments));
             }),
             "propose_create_role",
-            "Create a same-chat approval request for a Discord role. permissions is an optional raw Discord permission bitset string; omit it for no permissions."),
+            "Create a same-chat approval request for a Discord role. permissions accepts a raw bitset or comma-separated Discord permission names such as ViewChannel, SendMessages, or Administrator."),
 
         AIFunctionFactory.Create(
             async (string roleId, string permissions) => await ExecuteAsync("propose_change_role_permissions", guildId, requesterId, async () =>
                 await ProposeAsync(guildId, requesterId, approvalChannelId, new(
                     ChangeActionType.ChangeRolePermissions,
-                    ParseDiscordId(roleId, nameof(roleId)),
-                    new Dictionary<string, string> { ["permissions"] = permissions }))),
+                    await ResolveRoleIdAsync(guildId, roleId),
+                    new Dictionary<string, string> { ["permissions"] = NormalizeGuildPermissions(permissions) }))),
             "propose_change_role_permissions",
-            "HIGH-RISK TOOL. Create a same-chat approval request to replace a role's entire raw permission bitset."),
+            "HIGH-RISK TOOL. Replace a role's entire permission set after approval. roleId accepts an exact role ID or exact role name; permissions accepts a raw bitset or comma-separated Discord permission names."),
 
         AIFunctionFactory.Create(
             async (string roleId) => await ExecuteAsync("propose_delete_role", guildId, requesterId, async () =>
                 await ProposeAsync(guildId, requesterId, approvalChannelId, new(
                     ChangeActionType.DeleteRole,
-                    ParseDiscordId(roleId, nameof(roleId)),
+                    await ResolveRoleIdAsync(guildId, roleId),
                     new Dictionary<string, string>()))),
             "propose_delete_role",
-            "CRITICAL WRITE-SHAPED TOOL. Create a same-chat approval request to permanently delete a role."),
+            "CRITICAL WRITE-SHAPED TOOL. Create a same-chat approval request to permanently delete a role. roleId accepts an exact ID or exact role name."),
 
         AIFunctionFactory.Create(
             async (string userId, string roleId) => await ExecuteAsync("propose_assign_role", guildId, requesterId, async () =>
                 await ProposeAsync(guildId, requesterId, approvalChannelId, new(
                     ChangeActionType.AssignRole,
                     ParseDiscordId(userId, nameof(userId)),
-                    new Dictionary<string, string> { ["role_id"] = ParseDiscordId(roleId, nameof(roleId)).ToString() }))),
+                    new Dictionary<string, string> { ["role_id"] = (await ResolveRoleIdAsync(guildId, roleId)).ToString() }))),
             "propose_assign_role",
-            "Create a same-chat approval request to assign a role to a member. Both IDs must be Discord ID strings."),
+            "Create a same-chat approval request to assign a role to a member. userId must be an ID; roleId accepts an exact ID or exact role name."),
 
         AIFunctionFactory.Create(
             async (string userId, string roleId) => await ExecuteAsync("propose_remove_role", guildId, requesterId, async () =>
                 await ProposeAsync(guildId, requesterId, approvalChannelId, new(
                     ChangeActionType.RemoveRole,
                     ParseDiscordId(userId, nameof(userId)),
-                    new Dictionary<string, string> { ["role_id"] = ParseDiscordId(roleId, nameof(roleId)).ToString() }))),
+                    new Dictionary<string, string> { ["role_id"] = (await ResolveRoleIdAsync(guildId, roleId)).ToString() }))),
             "propose_remove_role",
-            "Create a same-chat approval request to remove a role from a member. Both IDs must be Discord ID strings."),
+            "Create a same-chat approval request to remove a role from a member. userId must be an ID; roleId accepts an exact ID or exact role name."),
 
         AIFunctionFactory.Create(
             async (string userId, int minutes, string? reason) => await ExecuteAsync("propose_timeout_member", guildId, requesterId, async () =>
@@ -277,7 +312,7 @@ internal sealed class QuorumAgentToolCatalog(
                     ParseDiscordId(channelId, nameof(channelId)),
                     new Dictionary<string, string>
                     {
-                        ["role_id"] = ParseDiscordId(roleId, nameof(roleId)).ToString(),
+                        ["role_id"] = (await ResolveRoleIdAsync(guildId, roleId)).ToString(),
                         ["allow"] = allow,
                         ["deny"] = deny
                     }))),
@@ -289,7 +324,7 @@ internal sealed class QuorumAgentToolCatalog(
                 await ProposeAsync(guildId, requesterId, approvalChannelId, new(
                     ChangeActionType.RemoveRoleChannelOverwrite,
                     ParseDiscordId(channelId, nameof(channelId)),
-                    new Dictionary<string, string> { ["role_id"] = ParseDiscordId(roleId, nameof(roleId)).ToString() }))),
+                    new Dictionary<string, string> { ["role_id"] = (await ResolveRoleIdAsync(guildId, roleId)).ToString() }))),
             "propose_remove_role_channel_overwrite",
             "HIGH-RISK TOOL. Create a same-chat approval request to remove one role-specific channel overwrite."),
 
@@ -424,6 +459,64 @@ internal sealed class QuorumAgentToolCatalog(
 
     private static ulong ParseDiscordId(string value, string name) =>
         ulong.TryParse(value, out var parsed) ? parsed : throw new ArgumentException($"{name} must be a Discord snowflake ID encoded as a string.");
+
+    private async Task<ulong> ResolveRoleIdAsync(ulong guildId, string selector)
+    {
+        var snapshot = await reads.GetLatestAsync(guildId);
+        var roles = snapshot.Roles.Data ?? throw new InvalidOperationException("Role configuration is unavailable.");
+        if (ulong.TryParse(selector, out var id))
+            return roles.Any(x => x.Id == id)
+                ? id
+                : throw new InvalidOperationException("The selected role does not exist in this server snapshot.");
+
+        var matches = roles.Where(x => x.Name.Equals(selector.Trim(), StringComparison.OrdinalIgnoreCase)).ToArray();
+        return matches.Length switch
+        {
+            1 => matches[0].Id,
+            0 => throw new InvalidOperationException($"No role named '{selector}' exists in this server snapshot. Use find_server_resources to inspect available roles."),
+            _ => throw new ArgumentException($"More than one role is named '{selector}'. Use find_server_resources and pass the exact ID.", nameof(selector))
+        };
+    }
+
+    private async Task<ulong> ResolveChannelIdAsync(ulong guildId, string selector)
+    {
+        var snapshot = await reads.GetLatestAsync(guildId);
+        var channels = snapshot.Channels.Data ?? throw new InvalidOperationException("Channel configuration is unavailable.");
+        if (ulong.TryParse(selector, out var id))
+            return channels.Any(x => x.Id == id)
+                ? id
+                : throw new InvalidOperationException("The selected channel does not exist in this server snapshot.");
+
+        var matches = channels.Where(x => x.Name.Equals(selector.Trim(), StringComparison.OrdinalIgnoreCase)).ToArray();
+        return matches.Length switch
+        {
+            1 => matches[0].Id,
+            0 => throw new InvalidOperationException($"No channel named '{selector}' exists in this server snapshot. Use find_server_resources to inspect available channels."),
+            _ => throw new ArgumentException($"More than one channel is named '{selector}'. Use find_server_resources and pass the exact ID.", nameof(selector))
+        };
+    }
+
+    private static string NormalizeGuildPermissions(string value)
+    {
+        if (ulong.TryParse(value, out var raw)) return raw.ToString(System.Globalization.CultureInfo.InvariantCulture);
+
+        ulong combined = 0;
+        foreach (var token in value.Split([',', '|'], StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+        {
+            var normalized = NormalizePermissionName(token);
+            if (normalized == "admin") normalized = "administrator";
+            var match = Enum.GetValues<GuildPermission>()
+                .Cast<GuildPermission?>()
+                .SingleOrDefault(permission => NormalizePermissionName(permission!.Value.ToString()) == normalized);
+            if (!match.HasValue)
+                throw new ArgumentException($"Unknown Discord permission '{token}'. Use canonical names such as ViewChannel, SendMessages, ManageRoles, or Administrator.", nameof(value));
+            combined |= Convert.ToUInt64(match.Value, System.Globalization.CultureInfo.InvariantCulture);
+        }
+        return combined.ToString(System.Globalization.CultureInfo.InvariantCulture);
+    }
+
+    private static string NormalizePermissionName(string value) =>
+        new(value.Where(char.IsLetterOrDigit).Select(char.ToLowerInvariant).ToArray());
 
     private async Task<object> ProposeAsync(
         ulong guildId,

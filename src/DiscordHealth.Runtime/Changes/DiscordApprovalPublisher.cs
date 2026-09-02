@@ -1,4 +1,5 @@
 using Discord;
+using Discord.Net;
 using DiscordHealth.Runtime.DiscordAdapter;
 
 namespace DiscordHealth.Runtime.Changes;
@@ -28,9 +29,19 @@ internal sealed class DiscordApprovalPublisher(
             ?? throw new InvalidOperationException("The invoking Discord channel cannot host a Quorum approval message.");
 
         var proposal = await proposals.ProposeAsync(guildId, requesterId, approvalChannelId, request, cancellationToken);
-        var message = await approvalChannel.SendMessageAsync(
-            embed: ChangeApprovalPresenter.Embed(proposal),
-            components: ChangeApprovalPresenter.Components(proposal));
+        IUserMessage message;
+        try
+        {
+            message = await approvalChannel.SendMessageAsync(
+                embed: ChangeApprovalPresenter.Embed(proposal),
+                components: ChangeApprovalPresenter.Components(proposal));
+        }
+        catch (HttpException exception) when ((int)exception.HttpCode == 403)
+        {
+            throw new UnauthorizedAccessException(
+                "Quorum cannot post the approval card in this channel. Grant View Channel, Send Messages, and Embed Links here, then retry.",
+                exception);
+        }
         return await proposals.AttachApprovalMessageAsync(guildId, proposal.Id, message.Id, cancellationToken);
     }
 }

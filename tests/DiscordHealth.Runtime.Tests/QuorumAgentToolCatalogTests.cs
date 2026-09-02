@@ -4,6 +4,7 @@ using DiscordHealth.Runtime.ServerConfiguration;
 using DiscordHealth.Runtime.Tools;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Logging.Abstractions;
+using System.Reflection;
 using Xunit;
 
 namespace DiscordHealth.Runtime.Tests;
@@ -19,6 +20,7 @@ public sealed class QuorumAgentToolCatalogTests
 
         Assert.Contains(tools, x => x.Name == "scan_server_configuration");
         Assert.Contains(tools, x => x.Name == "inspect_server_configuration");
+        Assert.Contains(tools, x => x.Name == "find_server_resources");
         Assert.Contains(tools, x => x.Name == "propose_channel_slowmode");
         Assert.Contains(tools, x => x.Name == "propose_create_text_channel");
         Assert.Contains(tools, x => x.Name == "propose_ban_member");
@@ -40,6 +42,31 @@ public sealed class QuorumAgentToolCatalogTests
         var tool = Assert.Single(catalog.GetTools(123, 456, 789).OfType<AIFunction>(), x => x.Name == "propose_channel_slowmode");
 
         Assert.Contains("never directly changes Discord", tool.Description, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void Create_channel_supports_an_exact_category_name_dependency()
+    {
+        var tool = Assert.Single(
+            CreateCatalog().GetTools(123, 456, 789).OfType<AIFunction>(),
+            x => x.Name == "propose_create_text_channel");
+
+        Assert.Contains("categoryName", tool.JsonSchema.ToString(), StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("category card must be approved", tool.Description, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Theory]
+    [InlineData("ViewChannel, SendMessages", "3072")]
+    [InlineData("Admin", "8")]
+    [InlineData("268435456", "268435456")]
+    public void Permission_names_are_normalized_to_a_discord_bitset(string value, string expected)
+    {
+        var normalize = typeof(QuorumAgentToolCatalog).GetMethod(
+            "NormalizeGuildPermissions",
+            BindingFlags.NonPublic | BindingFlags.Static);
+
+        Assert.NotNull(normalize);
+        Assert.Equal(expected, normalize.Invoke(null, [value]));
     }
 
     private static QuorumAgentToolCatalog CreateCatalog() =>
