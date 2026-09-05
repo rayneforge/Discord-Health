@@ -91,7 +91,28 @@ public sealed class ChangeProposalServiceTests : IDisposable
         Assert.Equal(ChangeProposalStatus.PendingApproval, (await service.GetAsync(1, proposal.Id))!.Status);
     }
 
-    private ChangeProposalService CreateService(FakeExecutor executor, bool enabled = true, FakeAuthorization? authorization = null)
+    [Fact]
+    public async Task One_batch_approval_executes_each_child_and_preserves_individual_results()
+    {
+        var executor = new ResourceFakeExecutor();
+        var service = CreateService(executor);
+        var batchId = Guid.NewGuid();
+        var first = await service.ProposeAsync(1, 100, 333, SlowMode(2, 10), batchId);
+        var second = await service.ProposeAsync(1, 100, 333, SlowMode(3, 20), batchId);
+
+        var attached = await service.AttachApprovalMessageToBatchAsync(1, batchId, 444);
+        var results = await service.ApproveBatchAsync(1, batchId, 999);
+
+        Assert.Equal(2, attached.Count);
+        Assert.All(attached, x => Assert.Equal((ulong)444, x.ApprovalMessageId));
+        Assert.All(results, x => Assert.Equal(batchId, x.ApprovalBatchId));
+        Assert.All(results, x => Assert.Equal(ChangeProposalStatus.Completed, x.Status));
+        Assert.Equal(2, executor.ExecuteCount);
+        Assert.Equal("10", executor.Values[first.Change.ResourceId]);
+        Assert.Equal("20", executor.Values[second.Change.ResourceId]);
+    }
+
+    private ChangeProposalService CreateService(IApprovedChangeExecutor executor, bool enabled = true, FakeAuthorization? authorization = null)
     {
         var options = Options.Create(new QuorumOptions
         {
@@ -142,6 +163,36 @@ public sealed class ChangeProposalServiceTests : IDisposable
             return AllowChanges
                 ? Task.CompletedTask
                 : Task.FromException(new UnauthorizedAccessException("Requester permission was revoked."));
+        }
+    }
+
+    private sealed class ResourceFakeExecutor : IApprovedChangeExecutor
+    {
+        public Dictionary<ulong, string> Values { get; } = [];
+        public int ExecuteCount { get; private set; }
+
+        public Task<ChangeSpecification> CreateSpecificationAsync(ulong guildId, ChangeRequest request, CancellationToken cancellationToken = default)
+        {
+            var before = Values.GetValueOrDefault(request.ResourceId, "0");
+            return Task.FromResult(new ChangeSpecification(
+                request.Action,
+                "channel",
+                request.ResourceId,
+                "slow_mode_seconds",
+                before,
+                request.Arguments["seconds"],
+                "MANAGE_CHANNELS",
+                Arguments: request.Arguments));
+        }
+
+        public Task<string> ObserveAsync(ulong guildId, ChangeSpecification change, CancellationToken cancellationToken = default) =>
+            Task.FromResult(Values.GetValueOrDefault(change.ResourceId, "0"));
+
+        public Task ExecuteAsync(ulong guildId, ChangeSpecification change, CancellationToken cancellationToken = default)
+        {
+            ExecuteCount++;
+            Values[change.ResourceId] = change.After;
+            return Task.CompletedTask;
         }
     }
 }

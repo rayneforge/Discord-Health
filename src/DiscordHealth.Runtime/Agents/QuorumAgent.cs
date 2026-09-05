@@ -1,6 +1,7 @@
 using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.Text;
+using DiscordHealth.Runtime.Changes;
 using Microsoft.Agents.AI;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Options;
@@ -24,6 +25,7 @@ public interface IQuorumAgent
 internal sealed class QuorumAgent(
     OpenAIClient openAi,
     IQuorumAgentToolCatalog toolCatalog,
+    IApprovalPublisher approvals,
     IOptions<QuorumAgentOptions> options,
     ILogger<QuorumAgent> logger) : IQuorumAgent
 {
@@ -44,7 +46,8 @@ internal sealed class QuorumAgent(
 
         Read tools may execute immediately. A write-shaped tool may only create a durable approval request.
         It does not make the Discord change. Never claim a proposed change was applied. Explain that it is
-        pending approval and name the proposal ID. Only invoke a write-shaped tool after the user clearly
+        pending approval and name the proposal ID. Multiple write proposals from the same response share one
+        batch approval card, but every proposal retains its own validation and result. Only invoke a write-shaped tool after the user clearly
         specifies the desired change and target. If no matching write tool exists, state the capability gap.
         Never substitute a different mutation just because it has an available tool.
         Do not announce, preview, or promise a proposal before the matching tool returns Success=true.
@@ -71,7 +74,8 @@ internal sealed class QuorumAgent(
         var stopwatch = Stopwatch.StartNew();
         try
         {
-            var tools = toolCatalog.GetTools(request.GuildId, request.RequesterId, request.ChannelId).ToList();
+            var approvalBatchId = Guid.NewGuid();
+            var tools = toolCatalog.GetTools(request.GuildId, request.RequesterId, request.ChannelId, approvalBatchId).ToList();
             logger.LogInformation(
                 "Quorum agent invocation started for guild {GuildId}, channel {ChannelId}, requester {RequesterId}; provider {Provider}, model {Model}, tools {ToolCount}, request characters {RequestLength}, prior turns {PriorTurns}.",
                 request.GuildId,
@@ -101,6 +105,8 @@ internal sealed class QuorumAgent(
             var text = response.Text?.Trim();
             if (string.IsNullOrWhiteSpace(text))
                 throw new InvalidOperationException("The model returned an empty response.");
+
+            await approvals.PublishBatchAsync(request.GuildId, approvalBatchId, cancellationToken);
 
             logger.LogInformation(
                 "Quorum agent invocation completed in {ElapsedMs} ms with {ResponseLength} response characters.",

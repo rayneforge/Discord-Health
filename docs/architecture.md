@@ -9,7 +9,7 @@ Discord interaction
         -> per-tool requester authorization
         -> typed read services
         -> typed write proposal services
-           -> durable pending approval card in the invoking chat
+           -> invocation-scoped durable proposal batch and one pending approval card in the invoking chat
               -> administrator Discord component approval
                  -> reauthorize requester -> validate -> compare -> execute -> verify
 ```
@@ -25,6 +25,7 @@ The conversational runtime follows GoodyAI's Microsoft Agent Framework pattern: 
 - Both requester and bot permissions are checked, including target-channel overwrites and Discord role hierarchy.
 - Requesters cannot grant permissions they do not possess or use Quorum to elevate themselves.
 - Requester authorization is checked again after approval and before execution.
+- Parallel and sequential write tools from one agent response share one batch decision while retaining per-change records, checks, verification, and outcomes. Batch execution is ordered but intentionally reports partial completion because Discord offers no transactional rollback.
 - A write-shaped agent function never directly changes Discord.
 - Guild and requester scope come from the Discord interaction, not model input.
 - Unsupported mutations are reported as gaps, never simulated through a different tool.

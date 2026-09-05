@@ -2,7 +2,7 @@
 
 **Quorum** is a conversational Discord administration and security agent. It can inspect the server in which it is invoked, explain what it can and cannot see, reason over deterministic security findings, and use narrowly scoped administration tools.
 
-Authorized read tools execute immediately. Write-shaped tools do not modify Discord: they create a durable approval card in the invoking chat. Only an administrator clicking Approve can pass the proposal through requester reauthorization, precondition validation, execution, and post-write verification.
+Authorized read tools execute immediately. Write-shaped tools do not modify Discord: they create durable proposals and an approval card in the invoking chat. All write tools used during one Quorum response are grouped onto one card, including parallel tool calls. Only an administrator clicking Approve (or Approve all) can pass the proposal through requester reauthorization, precondition validation, execution, and post-write verification.
 
 ## Commands
 
@@ -126,6 +126,8 @@ docker compose up -d
 ```
 
 Approval cards appear in the invoking chat. Approvers must be administrators. Proposals expire, reject duplicate approval, optionally prevent self-approval, compare the current value with the proposed precondition, execute only the typed action, and verify the resulting Discord value.
+
+When one agent response proposes multiple changes, Quorum shows a single `QBAT-*` card with every child `QCHG-*` proposal and **Approve all**, **Reject all**, and **Details** controls. A batch is capped at ten visible changes. Approval is one decision, but each child remains independently authorized, persisted, executed, verified, and reported. Actions run in a stable dependency-aware order (for example, categories before channels). Discord does not provide transactional rollback, so a later failure can leave earlier children completed; the card reports each final status and never claims the entire batch succeeded unless every child did.
 
 Authorization is permission-trimmed rather than all-or-nothing. Before creating a proposal, Quorum verifies both the requester's permission and the bot's permission for that exact action. It also applies Discord-style role hierarchy checks and prevents requesters from granting permissions they do not possess. After approval, all requester permissions and hierarchy constraints are evaluated again; a revoked permission makes the proposal fail closed without executing.
 

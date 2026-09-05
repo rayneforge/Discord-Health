@@ -5,11 +5,15 @@ namespace DiscordHealth.Runtime.Changes;
 
 public interface IChangeProposalService
 {
-    Task<ChangeProposal> ProposeAsync(ulong guildId, ulong requesterId, ulong approvalChannelId, ChangeRequest request, CancellationToken cancellationToken = default);
+    Task<ChangeProposal> ProposeAsync(ulong guildId, ulong requesterId, ulong approvalChannelId, ChangeRequest request, Guid? approvalBatchId = null, CancellationToken cancellationToken = default);
     Task<ChangeProposal> AttachApprovalMessageAsync(ulong guildId, Guid proposalId, ulong messageId, CancellationToken cancellationToken = default);
+    Task<IReadOnlyList<ChangeProposal>> AttachApprovalMessageToBatchAsync(ulong guildId, Guid approvalBatchId, ulong messageId, CancellationToken cancellationToken = default);
     Task<ChangeProposal> ApproveAsync(ulong guildId, Guid proposalId, ulong approverId, CancellationToken cancellationToken = default);
+    Task<IReadOnlyList<ChangeProposal>> ApproveBatchAsync(ulong guildId, Guid approvalBatchId, ulong approverId, CancellationToken cancellationToken = default);
     Task<ChangeProposal> RejectAsync(ulong guildId, Guid proposalId, ulong rejectedBy, string reason, CancellationToken cancellationToken = default);
+    Task<IReadOnlyList<ChangeProposal>> RejectBatchAsync(ulong guildId, Guid approvalBatchId, ulong rejectedBy, string reason, CancellationToken cancellationToken = default);
     Task<ChangeProposal?> GetAsync(ulong guildId, Guid proposalId, CancellationToken cancellationToken = default);
+    Task<IReadOnlyList<ChangeProposal>> GetBatchAsync(ulong guildId, Guid approvalBatchId, CancellationToken cancellationToken = default);
 }
 
 internal sealed class ChangeProposalService(
@@ -18,9 +22,10 @@ internal sealed class ChangeProposalService(
     IApprovedChangeExecutor executor,
     IQuorumAuthorizationService authorization) : IChangeProposalService
 {
+    private const int MaximumBatchSize = 10;
     private readonly SemaphoreSlim _gate = new(1, 1);
 
-    public async Task<ChangeProposal> ProposeAsync(ulong guildId, ulong requesterId, ulong approvalChannelId, ChangeRequest request, CancellationToken cancellationToken = default)
+    public async Task<ChangeProposal> ProposeAsync(ulong guildId, ulong requesterId, ulong approvalChannelId, ChangeRequest request, Guid? approvalBatchId = null, CancellationToken cancellationToken = default)
     {
         EnsureEnabled();
         await authorization.DemandChangeAsync(guildId, requesterId, request, cancellationToken);
@@ -30,8 +35,22 @@ internal sealed class ChangeProposalService(
         var risk = RiskFor(request.Action);
         var proposal = new ChangeProposal(id, "QCHG-" + id.ToString("N")[..8].ToUpperInvariant(), guildId, requesterId, DateTimeOffset.UtcNow,
             DateTimeOffset.UtcNow.AddMinutes(options.Value.Writes.ApprovalTtlMinutes), risk, ChangeProposalStatus.PendingApproval,
-            change, 1, options.Value.Writes.AllowLowRiskSelfApproval, [], null, null, null, null, approvalChannelId);
-        await store.SaveAsync(proposal, cancellationToken);
+            change, 1, options.Value.Writes.AllowLowRiskSelfApproval, [], null, null, null, null, approvalChannelId, approvalBatchId);
+
+        await _gate.WaitAsync(cancellationToken);
+        try
+        {
+            if (approvalBatchId.HasValue)
+            {
+                var existing = await GetBatchCoreAsync(guildId, approvalBatchId.Value, cancellationToken);
+                if (existing.Count >= MaximumBatchSize)
+                    throw new InvalidOperationException($"One Quorum approval batch can contain at most {MaximumBatchSize} changes. Start another request for the remaining changes.");
+                if (existing.Any(x => x.RequestedBy != requesterId || x.ApprovalChannelId != approvalChannelId))
+                    throw new InvalidOperationException("Approval batches cannot span requesters or Discord channels.");
+            }
+            await store.SaveAsync(proposal, cancellationToken);
+        }
+        finally { _gate.Release(); }
         return proposal;
     }
 
@@ -41,6 +60,29 @@ internal sealed class ChangeProposalService(
         proposal = proposal with { ApprovalMessageId = messageId };
         await store.SaveAsync(proposal, cancellationToken);
         return proposal;
+    }
+
+    public async Task<IReadOnlyList<ChangeProposal>> AttachApprovalMessageToBatchAsync(
+        ulong guildId,
+        Guid approvalBatchId,
+        ulong messageId,
+        CancellationToken cancellationToken = default)
+    {
+        await _gate.WaitAsync(cancellationToken);
+        try
+        {
+            var batch = await GetBatchCoreAsync(guildId, approvalBatchId, cancellationToken);
+            if (batch.Count == 0) throw new KeyNotFoundException("Approval batch was not found.");
+            var updated = new List<ChangeProposal>(batch.Count);
+            foreach (var proposal in batch)
+            {
+                var attached = proposal with { ApprovalMessageId = messageId };
+                await store.SaveAsync(attached, cancellationToken);
+                updated.Add(attached);
+            }
+            return updated;
+        }
+        finally { _gate.Release(); }
     }
 
     public async Task<ChangeProposal> ApproveAsync(ulong guildId, Guid proposalId, ulong approverId, CancellationToken cancellationToken = default)
@@ -110,7 +152,59 @@ internal sealed class ChangeProposalService(
         return await SaveAsync(proposal with { Status = ChangeProposalStatus.Rejected, StatusReason = $"Rejected by {rejectedBy}: {reason}" }, cancellationToken);
     }
 
+    public async Task<IReadOnlyList<ChangeProposal>> ApproveBatchAsync(
+        ulong guildId,
+        Guid approvalBatchId,
+        ulong approverId,
+        CancellationToken cancellationToken = default)
+    {
+        EnsureEnabled();
+        await authorization.DemandAdministratorAsync(guildId, approverId, cancellationToken);
+        var batch = await GetBatchAsync(guildId, approvalBatchId, cancellationToken);
+        if (batch.Count == 0) throw new KeyNotFoundException("Approval batch was not found.");
+        if (batch.Any(x => x.Status == ChangeProposalStatus.PendingApproval && !x.AllowSelfApproval && x.RequestedBy == approverId))
+            throw new InvalidOperationException("Self-approval is not permitted for this approval batch.");
+
+        foreach (var proposal in batch.OrderBy(x => ExecutionPriority(x.Change.Action)).ThenBy(x => x.RequestedAt).ThenBy(x => x.DisplayId))
+        {
+            if (proposal.Status != ChangeProposalStatus.PendingApproval) continue;
+            try
+            {
+                await ApproveAsync(guildId, proposal.Id, approverId, cancellationToken);
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                throw;
+            }
+            catch (Exception exception)
+            {
+                var latest = await RequiredAsync(guildId, proposal.Id, cancellationToken);
+                if (!IsTerminal(latest.Status))
+                    await SaveAsync(latest with { Status = ChangeProposalStatus.Failed, StatusReason = $"Batch execution failed: {exception.Message}" }, cancellationToken);
+            }
+        }
+
+        return await GetBatchAsync(guildId, approvalBatchId, cancellationToken);
+    }
+
+    public async Task<IReadOnlyList<ChangeProposal>> RejectBatchAsync(
+        ulong guildId,
+        Guid approvalBatchId,
+        ulong rejectedBy,
+        string reason,
+        CancellationToken cancellationToken = default)
+    {
+        await authorization.DemandAdministratorAsync(guildId, rejectedBy, cancellationToken);
+        var batch = await GetBatchAsync(guildId, approvalBatchId, cancellationToken);
+        if (batch.Count == 0) throw new KeyNotFoundException("Approval batch was not found.");
+        foreach (var proposal in batch.Where(x => x.Status == ChangeProposalStatus.PendingApproval))
+            await RejectAsync(guildId, proposal.Id, rejectedBy, reason, cancellationToken);
+        return await GetBatchAsync(guildId, approvalBatchId, cancellationToken);
+    }
+
     public Task<ChangeProposal?> GetAsync(ulong guildId, Guid proposalId, CancellationToken cancellationToken = default) => store.GetAsync(guildId, proposalId, cancellationToken);
+    public Task<IReadOnlyList<ChangeProposal>> GetBatchAsync(ulong guildId, Guid approvalBatchId, CancellationToken cancellationToken = default) =>
+        GetBatchCoreAsync(guildId, approvalBatchId, cancellationToken);
     private static ChangeRisk RiskFor(ChangeActionType action) => action switch
     {
         ChangeActionType.ChangeChannelSlowMode or ChangeActionType.ChangeChannelTopic or ChangeActionType.RenameChannel => ChangeRisk.Low,
@@ -127,6 +221,25 @@ internal sealed class ChangeProposalService(
     };
 
     private void EnsureEnabled() { if (!options.Value.Writes.Enabled) throw new InvalidOperationException("Quorum write capabilities are disabled."); }
+    private async Task<IReadOnlyList<ChangeProposal>> GetBatchCoreAsync(ulong guildId, Guid approvalBatchId, CancellationToken cancellationToken) =>
+        (await store.ListAsync(guildId, cancellationToken))
+            .Where(x => x.ApprovalBatchId == approvalBatchId)
+            .OrderBy(x => x.RequestedAt)
+            .ThenBy(x => x.DisplayId)
+            .ToArray();
+    private static int ExecutionPriority(ChangeActionType action) => action switch
+    {
+        ChangeActionType.CreateCategory => 0,
+        ChangeActionType.CreateRole => 1,
+        ChangeActionType.CreateTextChannel => 2,
+        ChangeActionType.CreateScheduledEvent or ChangeActionType.CreateAutoModKeywordRule => 3,
+        ChangeActionType.DeleteChannel or ChangeActionType.DeleteRole or ChangeActionType.DeleteAutoModRule => 20,
+        _ => 10
+    };
+    private static bool IsTerminal(ChangeProposalStatus status) => status is
+        ChangeProposalStatus.Completed or ChangeProposalStatus.Rejected or ChangeProposalStatus.Expired or
+        ChangeProposalStatus.Stale or ChangeProposalStatus.Failed or ChangeProposalStatus.Cancelled or
+        ChangeProposalStatus.NeedsReview;
     private async Task<ChangeProposal> RequiredAsync(ulong guildId, Guid id, CancellationToken ct) => await store.GetAsync(guildId, id, ct) ?? throw new KeyNotFoundException("Change proposal was not found.");
     private async Task<ChangeProposal> SaveAsync(ChangeProposal proposal, CancellationToken ct) { await store.SaveAsync(proposal, ct); return proposal; }
 }

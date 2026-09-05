@@ -11,7 +11,7 @@ namespace DiscordHealth.Runtime.Agents;
 
 public interface IQuorumAgentToolCatalog
 {
-    IReadOnlyList<AITool> GetTools(ulong guildId, ulong requesterId, ulong approvalChannelId);
+    IReadOnlyList<AITool> GetTools(ulong guildId, ulong requesterId, ulong approvalChannelId, Guid? approvalBatchId = null);
 }
 
 internal sealed class QuorumAgentToolCatalog(
@@ -23,7 +23,7 @@ internal sealed class QuorumAgentToolCatalog(
 {
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
 
-    public IReadOnlyList<AITool> GetTools(ulong guildId, ulong requesterId, ulong approvalChannelId) =>
+    public IReadOnlyList<AITool> GetTools(ulong guildId, ulong requesterId, ulong approvalChannelId, Guid? approvalBatchId = null) =>
     [
         AIFunctionFactory.Create(
             async () => await ExecuteAsync("scan_server_configuration", guildId, requesterId, async () =>
@@ -133,7 +133,7 @@ internal sealed class QuorumAgentToolCatalog(
         AIFunctionFactory.Create(
             async (string channelId, int seconds) => await ExecuteAsync("propose_channel_slowmode", guildId, requesterId, async () =>
             {
-                return await ProposeAsync(guildId, requesterId, approvalChannelId, new(
+                return await ProposeAsync(guildId, requesterId, approvalChannelId, approvalBatchId, new(
                     ChangeActionType.ChangeChannelSlowMode,
                     ParseDiscordId(channelId, nameof(channelId)),
                     new Dictionary<string, string> { ["seconds"] = seconds.ToString() }));
@@ -151,21 +151,21 @@ internal sealed class QuorumAgentToolCatalog(
                     throw new ArgumentException("Specify categoryId or categoryName, not both.");
                 Add(arguments, "topic", topic);
                 if (nsfw.HasValue) arguments["nsfw"] = nsfw.Value.ToString();
-                return await ProposeAsync(guildId, requesterId, approvalChannelId, new(ChangeActionType.CreateTextChannel, 0, arguments));
+                return await ProposeAsync(guildId, requesterId, approvalChannelId, approvalBatchId, new(ChangeActionType.CreateTextChannel, 0, arguments));
             }),
             "propose_create_text_channel",
-            "Create a same-chat approval request for a new Discord text channel. No channel is created before approval. Use categoryId for an existing category or categoryName for an exact category name. categoryName may reference a pending category proposal, but that category card must be approved and executed before the channel card."),
+            "Create a same-chat approval request for a new Discord text channel. No channel is created before approval. Use categoryId for an existing category or categoryName for an exact category name. categoryName may reference a category proposed in the same approval batch; category creation executes before channel creation."),
 
         AIFunctionFactory.Create(
             async (string name) => await ExecuteAsync("propose_create_category", guildId, requesterId, async () =>
-                await ProposeAsync(guildId, requesterId, approvalChannelId, new(
+                await ProposeAsync(guildId, requesterId, approvalChannelId, approvalBatchId, new(
                     ChangeActionType.CreateCategory, 0, new Dictionary<string, string> { ["name"] = name }))),
             "propose_create_category",
             "Create a same-chat approval request for a new Discord category."),
 
         AIFunctionFactory.Create(
             async (string channelId, string name) => await ExecuteAsync("propose_rename_channel", guildId, requesterId, async () =>
-                await ProposeAsync(guildId, requesterId, approvalChannelId, new(
+                await ProposeAsync(guildId, requesterId, approvalChannelId, approvalBatchId, new(
                     ChangeActionType.RenameChannel,
                     ParseDiscordId(channelId, nameof(channelId)),
                     new Dictionary<string, string> { ["name"] = name }))),
@@ -174,7 +174,7 @@ internal sealed class QuorumAgentToolCatalog(
 
         AIFunctionFactory.Create(
             async (string channelId, string topic) => await ExecuteAsync("propose_change_channel_topic", guildId, requesterId, async () =>
-                await ProposeAsync(guildId, requesterId, approvalChannelId, new(
+                await ProposeAsync(guildId, requesterId, approvalChannelId, approvalBatchId, new(
                     ChangeActionType.ChangeChannelTopic,
                     ParseDiscordId(channelId, nameof(channelId)),
                     new Dictionary<string, string> { ["topic"] = topic }))),
@@ -183,7 +183,7 @@ internal sealed class QuorumAgentToolCatalog(
 
         AIFunctionFactory.Create(
             async (string channelId) => await ExecuteAsync("propose_delete_channel", guildId, requesterId, async () =>
-                await ProposeAsync(guildId, requesterId, approvalChannelId, new(
+                await ProposeAsync(guildId, requesterId, approvalChannelId, approvalBatchId, new(
                     ChangeActionType.DeleteChannel,
                     ParseDiscordId(channelId, nameof(channelId)),
                     new Dictionary<string, string>()))),
@@ -195,14 +195,14 @@ internal sealed class QuorumAgentToolCatalog(
             {
                 var arguments = new Dictionary<string, string> { ["name"] = name };
                 if (!string.IsNullOrWhiteSpace(permissions)) arguments["permissions"] = NormalizeGuildPermissions(permissions);
-                return await ProposeAsync(guildId, requesterId, approvalChannelId, new(ChangeActionType.CreateRole, 0, arguments));
+                return await ProposeAsync(guildId, requesterId, approvalChannelId, approvalBatchId, new(ChangeActionType.CreateRole, 0, arguments));
             }),
             "propose_create_role",
             "Create a same-chat approval request for a Discord role. permissions accepts a raw bitset or comma-separated Discord permission names such as ViewChannel, SendMessages, or Administrator."),
 
         AIFunctionFactory.Create(
             async (string roleId, string permissions) => await ExecuteAsync("propose_change_role_permissions", guildId, requesterId, async () =>
-                await ProposeAsync(guildId, requesterId, approvalChannelId, new(
+                await ProposeAsync(guildId, requesterId, approvalChannelId, approvalBatchId, new(
                     ChangeActionType.ChangeRolePermissions,
                     await ResolveRoleIdAsync(guildId, requesterId, roleId),
                     new Dictionary<string, string> { ["permissions"] = NormalizeGuildPermissions(permissions) }))),
@@ -211,7 +211,7 @@ internal sealed class QuorumAgentToolCatalog(
 
         AIFunctionFactory.Create(
             async (string roleId) => await ExecuteAsync("propose_delete_role", guildId, requesterId, async () =>
-                await ProposeAsync(guildId, requesterId, approvalChannelId, new(
+                await ProposeAsync(guildId, requesterId, approvalChannelId, approvalBatchId, new(
                     ChangeActionType.DeleteRole,
                     await ResolveRoleIdAsync(guildId, requesterId, roleId),
                     new Dictionary<string, string>()))),
@@ -220,7 +220,7 @@ internal sealed class QuorumAgentToolCatalog(
 
         AIFunctionFactory.Create(
             async (string userId, string roleId) => await ExecuteAsync("propose_assign_role", guildId, requesterId, async () =>
-                await ProposeAsync(guildId, requesterId, approvalChannelId, new(
+                await ProposeAsync(guildId, requesterId, approvalChannelId, approvalBatchId, new(
                     ChangeActionType.AssignRole,
                     ParseDiscordId(userId, nameof(userId)),
                     new Dictionary<string, string> { ["role_id"] = (await ResolveRoleIdAsync(guildId, requesterId, roleId)).ToString() }))),
@@ -229,7 +229,7 @@ internal sealed class QuorumAgentToolCatalog(
 
         AIFunctionFactory.Create(
             async (string userId, string roleId) => await ExecuteAsync("propose_remove_role", guildId, requesterId, async () =>
-                await ProposeAsync(guildId, requesterId, approvalChannelId, new(
+                await ProposeAsync(guildId, requesterId, approvalChannelId, approvalBatchId, new(
                     ChangeActionType.RemoveRole,
                     ParseDiscordId(userId, nameof(userId)),
                     new Dictionary<string, string> { ["role_id"] = (await ResolveRoleIdAsync(guildId, requesterId, roleId)).ToString() }))),
@@ -242,7 +242,7 @@ internal sealed class QuorumAgentToolCatalog(
                 if (minutes is < 1 or > 40320) throw new ArgumentOutOfRangeException(nameof(minutes), "Timeout must be between 1 minute and 28 days.");
                 var arguments = new Dictionary<string, string> { ["minutes"] = minutes.ToString() };
                 Add(arguments, "reason", reason);
-                return await ProposeAsync(guildId, requesterId, approvalChannelId, new(ChangeActionType.TimeoutMember, ParseDiscordId(userId, nameof(userId)), arguments));
+                return await ProposeAsync(guildId, requesterId, approvalChannelId, approvalBatchId, new(ChangeActionType.TimeoutMember, ParseDiscordId(userId, nameof(userId)), arguments));
             }),
             "propose_timeout_member",
             "Create a same-chat approval request to timeout a member for 1 to 40320 minutes."),
@@ -252,7 +252,7 @@ internal sealed class QuorumAgentToolCatalog(
             {
                 var arguments = new Dictionary<string, string>();
                 Add(arguments, "reason", reason);
-                return await ProposeAsync(guildId, requesterId, approvalChannelId, new(ChangeActionType.KickMember, ParseDiscordId(userId, nameof(userId)), arguments));
+                return await ProposeAsync(guildId, requesterId, approvalChannelId, approvalBatchId, new(ChangeActionType.KickMember, ParseDiscordId(userId, nameof(userId)), arguments));
             }),
             "propose_kick_member",
             "HIGH-RISK TOOL. Create a same-chat approval request to remove a member from the server."),
@@ -264,14 +264,14 @@ internal sealed class QuorumAgentToolCatalog(
                 if (days is < 0 or > 7) throw new ArgumentOutOfRangeException(nameof(deleteMessageDays), "Delete-message days must be from 0 to 7.");
                 var arguments = new Dictionary<string, string> { ["delete_message_days"] = days.ToString() };
                 Add(arguments, "reason", reason);
-                return await ProposeAsync(guildId, requesterId, approvalChannelId, new(ChangeActionType.BanMember, ParseDiscordId(userId, nameof(userId)), arguments));
+                return await ProposeAsync(guildId, requesterId, approvalChannelId, approvalBatchId, new(ChangeActionType.BanMember, ParseDiscordId(userId, nameof(userId)), arguments));
             }),
             "propose_ban_member",
             "HIGH-RISK TOOL. Create a same-chat approval request to ban a Discord user."),
 
         AIFunctionFactory.Create(
             async (string userId) => await ExecuteAsync("propose_unban_member", guildId, requesterId, async () =>
-                await ProposeAsync(guildId, requesterId, approvalChannelId, new(
+                await ProposeAsync(guildId, requesterId, approvalChannelId, approvalBatchId, new(
                     ChangeActionType.UnbanMember,
                     ParseDiscordId(userId, nameof(userId)),
                     new Dictionary<string, string>()))),
@@ -280,7 +280,7 @@ internal sealed class QuorumAgentToolCatalog(
 
         AIFunctionFactory.Create(
             async (string webhookId) => await ExecuteAsync("propose_delete_webhook", guildId, requesterId, async () =>
-                await ProposeAsync(guildId, requesterId, approvalChannelId, new(
+                await ProposeAsync(guildId, requesterId, approvalChannelId, approvalBatchId, new(
                     ChangeActionType.DeleteWebhook,
                     ParseDiscordId(webhookId, nameof(webhookId)),
                     new Dictionary<string, string>()))),
@@ -289,7 +289,7 @@ internal sealed class QuorumAgentToolCatalog(
 
         AIFunctionFactory.Create(
             async (string inviteCode) => await ExecuteAsync("propose_revoke_invite", guildId, requesterId, async () =>
-                await ProposeAsync(guildId, requesterId, approvalChannelId, new(
+                await ProposeAsync(guildId, requesterId, approvalChannelId, approvalBatchId, new(
                     ChangeActionType.RevokeInvite,
                     0,
                     new Dictionary<string, string> { ["code"] = inviteCode }))),
@@ -307,14 +307,14 @@ internal sealed class QuorumAgentToolCatalog(
                     ["location"] = location
                 };
                 Add(arguments, "description", description);
-                return await ProposeAsync(guildId, requesterId, approvalChannelId, new(ChangeActionType.CreateScheduledEvent, 0, arguments));
+                return await ProposeAsync(guildId, requesterId, approvalChannelId, approvalBatchId, new(ChangeActionType.CreateScheduledEvent, 0, arguments));
             }),
             "propose_create_scheduled_event",
             "Create a same-chat approval request for an external Discord scheduled event. start and end must be ISO-8601 timestamps and location is required."),
 
         AIFunctionFactory.Create(
             async (string channelId, string roleId, string allow, string deny) => await ExecuteAsync("propose_set_role_channel_overwrite", guildId, requesterId, async () =>
-                await ProposeAsync(guildId, requesterId, approvalChannelId, new(
+                await ProposeAsync(guildId, requesterId, approvalChannelId, approvalBatchId, new(
                     ChangeActionType.SetRoleChannelOverwrite,
                     ParseDiscordId(channelId, nameof(channelId)),
                     new Dictionary<string, string>
@@ -328,7 +328,7 @@ internal sealed class QuorumAgentToolCatalog(
 
         AIFunctionFactory.Create(
             async (string channelId, string roleId) => await ExecuteAsync("propose_remove_role_channel_overwrite", guildId, requesterId, async () =>
-                await ProposeAsync(guildId, requesterId, approvalChannelId, new(
+                await ProposeAsync(guildId, requesterId, approvalChannelId, approvalBatchId, new(
                     ChangeActionType.RemoveRoleChannelOverwrite,
                     ParseDiscordId(channelId, nameof(channelId)),
                     new Dictionary<string, string> { ["role_id"] = (await ResolveRoleIdAsync(guildId, requesterId, roleId)).ToString() }))),
@@ -337,7 +337,7 @@ internal sealed class QuorumAgentToolCatalog(
 
         AIFunctionFactory.Create(
             async (string threadId, bool locked) => await ExecuteAsync("propose_set_thread_locked", guildId, requesterId, async () =>
-                await ProposeAsync(guildId, requesterId, approvalChannelId, new(
+                await ProposeAsync(guildId, requesterId, approvalChannelId, approvalBatchId, new(
                     ChangeActionType.SetThreadLocked,
                     ParseDiscordId(threadId, nameof(threadId)),
                     new Dictionary<string, string> { ["locked"] = locked.ToString() }))),
@@ -346,7 +346,7 @@ internal sealed class QuorumAgentToolCatalog(
 
         AIFunctionFactory.Create(
             async (string threadId, bool archived) => await ExecuteAsync("propose_set_thread_archived", guildId, requesterId, async () =>
-                await ProposeAsync(guildId, requesterId, approvalChannelId, new(
+                await ProposeAsync(guildId, requesterId, approvalChannelId, approvalBatchId, new(
                     ChangeActionType.SetThreadArchived,
                     ParseDiscordId(threadId, nameof(threadId)),
                     new Dictionary<string, string> { ["archived"] = archived.ToString() }))),
@@ -364,14 +364,14 @@ internal sealed class QuorumAgentToolCatalog(
                     ["enabled"] = (enabled ?? true).ToString()
                 };
                 Add(arguments, "custom_message", customMessage);
-                return await ProposeAsync(guildId, requesterId, approvalChannelId, new(ChangeActionType.CreateAutoModKeywordRule, 0, arguments));
+                return await ProposeAsync(guildId, requesterId, approvalChannelId, approvalBatchId, new(ChangeActionType.CreateAutoModKeywordRule, 0, arguments));
             }),
             "propose_create_automod_keyword_rule",
             "HIGH-RISK TOOL. Create a same-chat approval request for an AutoMod keyword rule that blocks matching messages."),
 
         AIFunctionFactory.Create(
             async (string ruleId, bool enabled) => await ExecuteAsync("propose_set_automod_rule_enabled", guildId, requesterId, async () =>
-                await ProposeAsync(guildId, requesterId, approvalChannelId, new(
+                await ProposeAsync(guildId, requesterId, approvalChannelId, approvalBatchId, new(
                     ChangeActionType.SetAutoModRuleEnabled,
                     ParseDiscordId(ruleId, nameof(ruleId)),
                     new Dictionary<string, string> { ["enabled"] = enabled.ToString() }))),
@@ -380,7 +380,7 @@ internal sealed class QuorumAgentToolCatalog(
 
         AIFunctionFactory.Create(
             async (string ruleId) => await ExecuteAsync("propose_delete_automod_rule", guildId, requesterId, async () =>
-                await ProposeAsync(guildId, requesterId, approvalChannelId, new(
+                await ProposeAsync(guildId, requesterId, approvalChannelId, approvalBatchId, new(
                     ChangeActionType.DeleteAutoModRule,
                     ParseDiscordId(ruleId, nameof(ruleId)),
                     new Dictionary<string, string>()))),
@@ -389,7 +389,7 @@ internal sealed class QuorumAgentToolCatalog(
 
         AIFunctionFactory.Create(
             async (bool enabled, string description) => await ExecuteAsync("propose_update_welcome_screen", guildId, requesterId, async () =>
-                await ProposeAsync(guildId, requesterId, approvalChannelId, new(
+                await ProposeAsync(guildId, requesterId, approvalChannelId, approvalBatchId, new(
                     ChangeActionType.UpdateWelcomeScreen,
                     0,
                     new Dictionary<string, string> { ["enabled"] = enabled.ToString(), ["description"] = description }))),
@@ -403,7 +403,7 @@ internal sealed class QuorumAgentToolCatalog(
                 if (enabled.HasValue) arguments["enabled"] = enabled.Value.ToString();
                 Add(arguments, "mode", mode);
                 if (arguments.Count == 0) throw new ArgumentException("Specify enabled, mode, or both.");
-                return await ProposeAsync(guildId, requesterId, approvalChannelId, new(ChangeActionType.UpdateOnboarding, 0, arguments));
+                return await ProposeAsync(guildId, requesterId, approvalChannelId, approvalBatchId, new(ChangeActionType.UpdateOnboarding, 0, arguments));
             }),
             "propose_update_onboarding",
             "Create a same-chat approval request to change onboarding enabled state and/or mode (Default or Advanced), preserving existing prompts and default channels."),
@@ -551,9 +551,10 @@ internal sealed class QuorumAgentToolCatalog(
         ulong guildId,
         ulong requesterId,
         ulong approvalChannelId,
+        Guid? approvalBatchId,
         ChangeRequest request)
     {
-        var proposal = await approvals.ProposeAsync(guildId, requesterId, approvalChannelId, request);
+        var proposal = await approvals.ProposeAsync(guildId, requesterId, approvalChannelId, request, approvalBatchId);
         return new
         {
             Success = true,
@@ -563,7 +564,8 @@ internal sealed class QuorumAgentToolCatalog(
             proposal.Change,
             ApprovalPending = true,
             ApprovalChannelId = approvalChannelId.ToString(),
-            Message = "No Discord change has been executed. An administrator must use the approval card in this chat."
+            ApprovalBatchId = approvalBatchId?.ToString("N"),
+            Message = "No Discord change has been executed. An administrator must approve the grouped request in this chat."
         };
     }
 

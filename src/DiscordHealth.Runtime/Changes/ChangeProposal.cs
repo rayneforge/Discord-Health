@@ -68,4 +68,5 @@ public sealed record ChangeProposal(
     string? StatusReason,
     DateTimeOffset? ExecutedAt,
     string? VerificationValue,
-    ulong? ApprovalChannelId = null);
+    ulong? ApprovalChannelId = null,
+    Guid? ApprovalBatchId = null);

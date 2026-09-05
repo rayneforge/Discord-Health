@@ -53,7 +53,8 @@ public sealed class QuorumAgentToolCatalogTests
             x => x.Name == "propose_create_text_channel");
 
         Assert.Contains("categoryName", tool.JsonSchema.ToString(), StringComparison.OrdinalIgnoreCase);
-        Assert.Contains("category card must be approved", tool.Description, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("same approval batch", tool.Description, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("category creation executes before channel creation", tool.Description, StringComparison.OrdinalIgnoreCase);
     }
 
     [Theory]
@@ -87,7 +88,8 @@ public sealed class QuorumAgentToolCatalogTests
 
     private sealed class StubApprovals : IApprovalPublisher
     {
-        public Task<ChangeProposal> ProposeAsync(ulong guildId, ulong requesterId, ulong approvalChannelId, ChangeRequest request, CancellationToken cancellationToken = default) => throw new NotSupportedException();
+        public Task<ChangeProposal> ProposeAsync(ulong guildId, ulong requesterId, ulong approvalChannelId, ChangeRequest request, Guid? approvalBatchId = null, CancellationToken cancellationToken = default) => throw new NotSupportedException();
+        public Task PublishBatchAsync(ulong guildId, Guid approvalBatchId, CancellationToken cancellationToken = default) => Task.CompletedTask;
     }
 
     private sealed class StubAuthorization : IQuorumAuthorizationService
