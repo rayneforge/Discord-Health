@@ -70,7 +70,10 @@ internal sealed class DiscordApprovedChangeExecutor(
             ChangeActionType.UpdateOnboarding => await OnboardingSpecificationAsync(guild, request, arguments),
             _ => throw new NotSupportedException($"Unsupported action {request.Action}.")
         };
-        return specification;
+        return specification with
+        {
+            RequiredDiscordPermission = QuorumPermissionRequirements.ForChangeDisplay(request.Action)
+        };
     }
 
     public async Task<string> ObserveAsync(ulong guildId, ChangeSpecification change, CancellationToken cancellationToken = default)
@@ -111,7 +114,7 @@ internal sealed class DiscordApprovedChangeExecutor(
     {
         var guild = GetGuild(guildId);
         EnforceSelfProtection(guild, change.Action, change.ResourceId, change.Arguments);
-        EnsurePermission(guild, change.RequiredDiscordPermission);
+        EnsurePermissions(guild, change.Action);
         var requestOptions = new RequestOptions { AuditLogReason = $"Quorum approved action {change.Action}" };
 
         switch (change.Action)
@@ -501,23 +504,15 @@ internal sealed class DiscordApprovedChangeExecutor(
         };
     }
 
-    private static void EnsurePermission(SocketGuild guild, string permission)
+    private static void EnsurePermissions(SocketGuild guild, ChangeActionType action)
     {
-        var allowed = permission switch
-        {
-            "MANAGE_CHANNELS" => guild.CurrentUser.GuildPermissions.ManageChannels,
-            "MANAGE_ROLES" => guild.CurrentUser.GuildPermissions.ManageRoles,
-            "MODERATE_MEMBERS" => guild.CurrentUser.GuildPermissions.ModerateMembers,
-            "KICK_MEMBERS" => guild.CurrentUser.GuildPermissions.KickMembers,
-            "BAN_MEMBERS" => guild.CurrentUser.GuildPermissions.BanMembers,
-            "MANAGE_WEBHOOKS" => guild.CurrentUser.GuildPermissions.ManageWebhooks,
-            "MANAGE_GUILD" => guild.CurrentUser.GuildPermissions.ManageGuild,
-            "MANAGE_EVENTS" => guild.CurrentUser.GuildPermissions.ManageEvents,
-            "CREATE_EVENTS" => guild.CurrentUser.GuildPermissions.CreateEvents,
-            "MANAGE_THREADS" => guild.CurrentUser.GuildPermissions.ManageThreads,
-            _ => false
-        };
-        if (!allowed) throw new UnauthorizedAccessException($"Quorum lacks {permission}.");
+        if (guild.CurrentUser.GuildPermissions.Administrator) return;
+        var missing = QuorumPermissionRequirements.ForChange(action)
+            .Where(permission => !guild.CurrentUser.GuildPermissions.Has(permission))
+            .ToArray();
+        if (missing.Length > 0)
+            throw new UnauthorizedAccessException(
+                $"Quorum lacks {string.Join(" + ", missing.Select(QuorumPermissionRequirements.Display))}.");
     }
 
     private void EnforceSelfProtection(

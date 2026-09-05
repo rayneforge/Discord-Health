@@ -1,5 +1,6 @@
 using DiscordHealth.Runtime.Agents;
 using DiscordHealth.Runtime.Changes;
+using DiscordHealth.Runtime.DiscordAdapter;
 using DiscordHealth.Runtime.ServerConfiguration;
 using DiscordHealth.Runtime.Tools;
 using Microsoft.Extensions.AI;
@@ -70,7 +71,7 @@ public sealed class QuorumAgentToolCatalogTests
     }
 
     private static QuorumAgentToolCatalog CreateCatalog() =>
-        new(new StubReads(), new StubPermissions(), new StubApprovals(), NullLogger<QuorumAgentToolCatalog>.Instance);
+        new(new StubReads(), new StubPermissions(), new StubApprovals(), new StubAuthorization(), NullLogger<QuorumAgentToolCatalog>.Instance);
 
     private sealed class StubReads : IQuorumReadTools
     {
@@ -87,5 +88,13 @@ public sealed class QuorumAgentToolCatalogTests
     private sealed class StubApprovals : IApprovalPublisher
     {
         public Task<ChangeProposal> ProposeAsync(ulong guildId, ulong requesterId, ulong approvalChannelId, ChangeRequest request, CancellationToken cancellationToken = default) => throw new NotSupportedException();
+    }
+
+    private sealed class StubAuthorization : IQuorumAuthorizationService
+    {
+        public Task DemandReadAsync(ulong guildId, ulong requesterId, QuorumReadCapability capability, CancellationToken cancellationToken = default) => Task.CompletedTask;
+        public Task DemandResourceLookupAsync(ulong guildId, ulong requesterId, string resourceType, CancellationToken cancellationToken = default) => Task.CompletedTask;
+        public Task DemandChangeAsync(ulong guildId, ulong requesterId, ChangeRequest request, CancellationToken cancellationToken = default) => Task.CompletedTask;
+        public Task DemandAdministratorAsync(ulong guildId, ulong userId, CancellationToken cancellationToken = default) => Task.CompletedTask;
     }
 }

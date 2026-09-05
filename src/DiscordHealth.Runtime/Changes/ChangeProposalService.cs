@@ -1,4 +1,5 @@
 using Microsoft.Extensions.Options;
+using DiscordHealth.Runtime.DiscordAdapter;
 
 namespace DiscordHealth.Runtime.Changes;
 
@@ -11,13 +12,18 @@ public interface IChangeProposalService
     Task<ChangeProposal?> GetAsync(ulong guildId, Guid proposalId, CancellationToken cancellationToken = default);
 }
 
-internal sealed class ChangeProposalService(IOptions<QuorumOptions> options, IChangeProposalStore store, IApprovedChangeExecutor executor) : IChangeProposalService
+internal sealed class ChangeProposalService(
+    IOptions<QuorumOptions> options,
+    IChangeProposalStore store,
+    IApprovedChangeExecutor executor,
+    IQuorumAuthorizationService authorization) : IChangeProposalService
 {
     private readonly SemaphoreSlim _gate = new(1, 1);
 
     public async Task<ChangeProposal> ProposeAsync(ulong guildId, ulong requesterId, ulong approvalChannelId, ChangeRequest request, CancellationToken cancellationToken = default)
     {
         EnsureEnabled();
+        await authorization.DemandChangeAsync(guildId, requesterId, request, cancellationToken);
         var change = await executor.CreateSpecificationAsync(guildId, request, cancellationToken);
         if (change.Before == change.After) throw new InvalidOperationException("The requested change already matches the current value.");
         var id = Guid.NewGuid();
@@ -40,6 +46,7 @@ internal sealed class ChangeProposalService(IOptions<QuorumOptions> options, ICh
     public async Task<ChangeProposal> ApproveAsync(ulong guildId, Guid proposalId, ulong approverId, CancellationToken cancellationToken = default)
     {
         EnsureEnabled();
+        await authorization.DemandAdministratorAsync(guildId, approverId, cancellationToken);
         await _gate.WaitAsync(cancellationToken);
         try
         {
@@ -53,6 +60,27 @@ internal sealed class ChangeProposalService(IOptions<QuorumOptions> options, ICh
             if (proposal.Approvals.Count < proposal.RequiredApprovals) return await SaveAsync(proposal, cancellationToken);
             proposal = await SaveAsync(proposal with { Status = ChangeProposalStatus.Approved }, cancellationToken);
             proposal = await SaveAsync(proposal with { Status = ChangeProposalStatus.Validating }, cancellationToken);
+
+            try
+            {
+                await authorization.DemandChangeAsync(
+                    guildId,
+                    proposal.RequestedBy,
+                    new ChangeRequest(proposal.Change.Action, proposal.Change.ResourceId, proposal.Change.Arguments ?? new Dictionary<string, string>()),
+                    cancellationToken);
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                throw;
+            }
+            catch (Exception exception)
+            {
+                return await SaveAsync(proposal with
+                {
+                    Status = ChangeProposalStatus.Failed,
+                    StatusReason = $"Requester authorization could not be revalidated: {exception.Message}"
+                }, cancellationToken);
+            }
 
             var current = await executor.ObserveAsync(guildId, proposal.Change, cancellationToken);
             if (current != proposal.Change.Before)
@@ -76,6 +104,7 @@ internal sealed class ChangeProposalService(IOptions<QuorumOptions> options, ICh
 
     public async Task<ChangeProposal> RejectAsync(ulong guildId, Guid proposalId, ulong rejectedBy, string reason, CancellationToken cancellationToken = default)
     {
+        await authorization.DemandAdministratorAsync(guildId, rejectedBy, cancellationToken);
         var proposal = await RequiredAsync(guildId, proposalId, cancellationToken);
         if (proposal.Status != ChangeProposalStatus.PendingApproval) throw new InvalidOperationException($"Proposal is {proposal.Status}, not pending approval.");
         return await SaveAsync(proposal with { Status = ChangeProposalStatus.Rejected, StatusReason = $"Rejected by {rejectedBy}: {reason}" }, cancellationToken);

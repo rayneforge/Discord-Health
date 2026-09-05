@@ -88,6 +88,7 @@ public sealed class ServerConfigurationCommand(IQuorumReadTools tools) : Interac
 {
     [SlashCommand("server-config", "Ask Quorum to export the server configuration (read-only)")]
     [RequireContext(ContextType.Guild)]
+    [RequireUserPermission(GuildPermission.ViewAuditLog)]
     [DefaultMemberPermissions(GuildPermission.ViewAuditLog)]
     public async Task ExportAsync()
     {
@@ -108,6 +109,7 @@ public sealed class ServerConfigurationCommand(IQuorumReadTools tools) : Interac
 
     [SlashCommand("quorum-findings", "Show Quorum's current security and visibility findings")]
     [RequireContext(ContextType.Guild)]
+    [RequireUserPermission(GuildPermission.ViewAuditLog)]
     [DefaultMemberPermissions(GuildPermission.ViewAuditLog)]
     public async Task FindingsAsync()
     {
@@ -137,8 +139,7 @@ public sealed class QuorumAgentCommand(IQuorumAgent agent) : InteractionModuleBa
 {
     [SlashCommand("quorum", "Talk to Quorum about this server")]
     [RequireContext(ContextType.Guild)]
-    [RequireUserPermission(GuildPermission.Administrator)]
-    [DefaultMemberPermissions(GuildPermission.Administrator)]
+    [DefaultMemberPermissions(GuildPermission.ViewChannel)]
     public async Task AskAsync([Summary("message", "Question or administration request for Quorum")] string message)
     {
         await DeferAsync(ephemeral: true);

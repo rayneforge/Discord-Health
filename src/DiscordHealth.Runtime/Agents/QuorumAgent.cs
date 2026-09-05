@@ -35,6 +35,8 @@ internal sealed class QuorumAgent(
         or channel ID when tool results can provide it. Use a fresh scan when the user asks about current
         state; otherwise use the latest snapshot. Clearly distinguish observed facts, deterministic
         findings, inferences, missing collector coverage, permission failures, and unsupported capabilities.
+        Every tool enforces the invoking user's current Discord permissions. An administrator's later
+        approval cannot override a requester authorization or role-hierarchy failure.
         If a tool returns Success=false, state its exact error category and message. Never replace a tool
         failure with a vague statement or ask the user for focus areas when their request was already clear.
         Never say that a tool was attempted, succeeded, or failed unless you received that tool's result in

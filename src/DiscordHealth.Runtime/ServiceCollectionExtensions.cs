@@ -43,6 +43,7 @@ public static class ServiceCollectionExtensions
         services.AddSingleton<IQuorumReadTools, QuorumReadTools>();
         services.AddSingleton<IPermissionReadTools, PermissionReadTools>();
         services.AddSingleton<IChangeProposalStore, FileChangeProposalStore>();
+        services.AddSingleton<IQuorumAuthorizationService, DiscordQuorumAuthorizationService>();
         services.AddSingleton<IApprovedChangeExecutor, DiscordApprovedChangeExecutor>();
         services.AddSingleton<IChangeProposalService, ChangeProposalService>();
         services.AddSingleton<IApprovalPublisher, DiscordApprovalPublisher>();

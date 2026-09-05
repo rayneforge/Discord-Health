@@ -1,5 +1,6 @@
 using DiscordHealth.Runtime;
 using DiscordHealth.Runtime.Changes;
+using DiscordHealth.Runtime.DiscordAdapter;
 using Microsoft.Extensions.Options;
 using Xunit;
 
@@ -59,14 +60,45 @@ public sealed class ChangeProposalServiceTests : IDisposable
         await Assert.ThrowsAsync<InvalidOperationException>(() => service.ProposeAsync(1, 100, 3, SlowMode(2, 10)));
     }
 
-    private ChangeProposalService CreateService(FakeExecutor executor, bool enabled = true)
+    [Fact]
+    public async Task Requester_authorization_is_rechecked_before_execution()
+    {
+        var executor = new FakeExecutor("0");
+        var authorization = new FakeAuthorization();
+        var service = CreateService(executor, authorization: authorization);
+        var proposal = await service.ProposeAsync(1, 100, 3, SlowMode(2, 10));
+        authorization.AllowChanges = false;
+
+        var result = await service.ApproveAsync(1, proposal.Id, 999);
+
+        Assert.Equal(ChangeProposalStatus.Failed, result.Status);
+        Assert.Contains("could not be revalidated", result.StatusReason, StringComparison.OrdinalIgnoreCase);
+        Assert.Equal(0, executor.ExecuteCount);
+        Assert.Equal(2, authorization.ChangeChecks);
+    }
+
+    [Fact]
+    public async Task Non_administrator_cannot_approve_a_proposal_through_the_service()
+    {
+        var executor = new FakeExecutor("0");
+        var authorization = new FakeAuthorization { AllowAdministrator = false };
+        var service = CreateService(executor, authorization: authorization);
+        var proposal = await service.ProposeAsync(1, 100, 3, SlowMode(2, 10));
+
+        await Assert.ThrowsAsync<UnauthorizedAccessException>(() => service.ApproveAsync(1, proposal.Id, 777));
+
+        Assert.Equal(0, executor.ExecuteCount);
+        Assert.Equal(ChangeProposalStatus.PendingApproval, (await service.GetAsync(1, proposal.Id))!.Status);
+    }
+
+    private ChangeProposalService CreateService(FakeExecutor executor, bool enabled = true, FakeAuthorization? authorization = null)
     {
         var options = Options.Create(new QuorumOptions
         {
             DataDirectory = _directory,
             Writes = new WriteCapabilityOptions { Enabled = enabled, AllowLowRiskSelfApproval = true }
         });
-        return new ChangeProposalService(options, new FileChangeProposalStore(options), executor);
+        return new ChangeProposalService(options, new FileChangeProposalStore(options), executor, authorization ?? new FakeAuthorization());
     }
 
     public void Dispose()
@@ -89,6 +121,27 @@ public sealed class ChangeProposalServiceTests : IDisposable
             ExecuteCount++;
             Value = change.After;
             return Task.CompletedTask;
+        }
+    }
+
+    private sealed class FakeAuthorization : IQuorumAuthorizationService
+    {
+        public bool AllowChanges { get; set; } = true;
+        public bool AllowAdministrator { get; set; } = true;
+        public int ChangeChecks { get; private set; }
+
+        public Task DemandReadAsync(ulong guildId, ulong requesterId, QuorumReadCapability capability, CancellationToken cancellationToken = default) => Task.CompletedTask;
+        public Task DemandResourceLookupAsync(ulong guildId, ulong requesterId, string resourceType, CancellationToken cancellationToken = default) => Task.CompletedTask;
+        public Task DemandAdministratorAsync(ulong guildId, ulong userId, CancellationToken cancellationToken = default) =>
+            AllowAdministrator
+                ? Task.CompletedTask
+                : Task.FromException(new UnauthorizedAccessException("Administrator is required."));
+        public Task DemandChangeAsync(ulong guildId, ulong requesterId, ChangeRequest request, CancellationToken cancellationToken = default)
+        {
+            ChangeChecks++;
+            return AllowChanges
+                ? Task.CompletedTask
+                : Task.FromException(new UnauthorizedAccessException("Requester permission was revoked."));
         }
     }
 }

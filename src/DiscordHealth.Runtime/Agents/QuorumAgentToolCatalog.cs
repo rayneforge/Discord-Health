@@ -2,6 +2,7 @@ using System.Diagnostics;
 using System.Text.Json;
 using Discord;
 using DiscordHealth.Runtime.Changes;
+using DiscordHealth.Runtime.DiscordAdapter;
 using DiscordHealth.Runtime.ServerConfiguration;
 using DiscordHealth.Runtime.Tools;
 using Microsoft.Extensions.AI;
@@ -17,6 +18,7 @@ internal sealed class QuorumAgentToolCatalog(
     IQuorumReadTools reads,
     IPermissionReadTools permissions,
     IApprovalPublisher approvals,
+    IQuorumAuthorizationService authorization,
     ILogger<QuorumAgentToolCatalog> logger) : IQuorumAgentToolCatalog
 {
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
@@ -26,6 +28,7 @@ internal sealed class QuorumAgentToolCatalog(
         AIFunctionFactory.Create(
             async () => await ExecuteAsync("scan_server_configuration", guildId, requesterId, async () =>
             {
+                await authorization.DemandReadAsync(guildId, requesterId, QuorumReadCapability.FullConfiguration);
                 var review = await reads.ScanAsync(guildId);
                 return new
                 {
@@ -42,6 +45,7 @@ internal sealed class QuorumAgentToolCatalog(
         AIFunctionFactory.Create(
             async (string section) => await ExecuteAsync("inspect_server_configuration", guildId, requesterId, async () =>
             {
+                await authorization.DemandReadAsync(guildId, requesterId, ReadCapabilityForSection(section));
                 var snapshot = await reads.GetLatestAsync(guildId);
                 object result = section.Trim().ToLowerInvariant() switch
                 {
@@ -71,6 +75,7 @@ internal sealed class QuorumAgentToolCatalog(
         AIFunctionFactory.Create(
             async (string resourceType, string query) => await ExecuteAsync("find_server_resources", guildId, requesterId, async () =>
             {
+                await authorization.DemandResourceLookupAsync(guildId, requesterId, resourceType);
                 var snapshot = await reads.GetLatestAsync(guildId);
                 var normalizedType = resourceType.Trim().ToLowerInvariant();
                 var normalizedQuery = query.Trim();
@@ -102,6 +107,7 @@ internal sealed class QuorumAgentToolCatalog(
         AIFunctionFactory.Create(
             async (string? severity, string? status) => await ExecuteAsync("list_security_findings", guildId, requesterId, async () =>
             {
+                await authorization.DemandReadAsync(guildId, requesterId, QuorumReadCapability.Findings);
                 var findings = await reads.ListFindingsAsync(guildId);
                 return findings
                     .Where(x => string.IsNullOrWhiteSpace(severity) || x.Severity.ToString().Equals(severity, StringComparison.OrdinalIgnoreCase))
@@ -114,10 +120,11 @@ internal sealed class QuorumAgentToolCatalog(
         AIFunctionFactory.Create(
             async (string roleId, string channelId, string permission) => await ExecuteAsync("explain_role_permission", guildId, requesterId, async () =>
             {
+                await authorization.DemandReadAsync(guildId, requesterId, QuorumReadCapability.PermissionAnalysis);
                 return await permissions.ExplainRolePermissionAsync(
                     guildId,
-                    await ResolveRoleIdAsync(guildId, roleId),
-                    await ResolveChannelIdAsync(guildId, channelId),
+                    await ResolveRoleIdAsync(guildId, requesterId, roleId),
+                    await ResolveChannelIdAsync(guildId, requesterId, channelId),
                     permission);
             }),
             "explain_role_permission",
@@ -197,7 +204,7 @@ internal sealed class QuorumAgentToolCatalog(
             async (string roleId, string permissions) => await ExecuteAsync("propose_change_role_permissions", guildId, requesterId, async () =>
                 await ProposeAsync(guildId, requesterId, approvalChannelId, new(
                     ChangeActionType.ChangeRolePermissions,
-                    await ResolveRoleIdAsync(guildId, roleId),
+                    await ResolveRoleIdAsync(guildId, requesterId, roleId),
                     new Dictionary<string, string> { ["permissions"] = NormalizeGuildPermissions(permissions) }))),
             "propose_change_role_permissions",
             "HIGH-RISK TOOL. Replace a role's entire permission set after approval. roleId accepts an exact role ID or exact role name; permissions accepts a raw bitset or comma-separated Discord permission names."),
@@ -206,7 +213,7 @@ internal sealed class QuorumAgentToolCatalog(
             async (string roleId) => await ExecuteAsync("propose_delete_role", guildId, requesterId, async () =>
                 await ProposeAsync(guildId, requesterId, approvalChannelId, new(
                     ChangeActionType.DeleteRole,
-                    await ResolveRoleIdAsync(guildId, roleId),
+                    await ResolveRoleIdAsync(guildId, requesterId, roleId),
                     new Dictionary<string, string>()))),
             "propose_delete_role",
             "CRITICAL WRITE-SHAPED TOOL. Create a same-chat approval request to permanently delete a role. roleId accepts an exact ID or exact role name."),
@@ -216,7 +223,7 @@ internal sealed class QuorumAgentToolCatalog(
                 await ProposeAsync(guildId, requesterId, approvalChannelId, new(
                     ChangeActionType.AssignRole,
                     ParseDiscordId(userId, nameof(userId)),
-                    new Dictionary<string, string> { ["role_id"] = (await ResolveRoleIdAsync(guildId, roleId)).ToString() }))),
+                    new Dictionary<string, string> { ["role_id"] = (await ResolveRoleIdAsync(guildId, requesterId, roleId)).ToString() }))),
             "propose_assign_role",
             "Create a same-chat approval request to assign a role to a member. userId must be an ID; roleId accepts an exact ID or exact role name."),
 
@@ -225,7 +232,7 @@ internal sealed class QuorumAgentToolCatalog(
                 await ProposeAsync(guildId, requesterId, approvalChannelId, new(
                     ChangeActionType.RemoveRole,
                     ParseDiscordId(userId, nameof(userId)),
-                    new Dictionary<string, string> { ["role_id"] = (await ResolveRoleIdAsync(guildId, roleId)).ToString() }))),
+                    new Dictionary<string, string> { ["role_id"] = (await ResolveRoleIdAsync(guildId, requesterId, roleId)).ToString() }))),
             "propose_remove_role",
             "Create a same-chat approval request to remove a role from a member. userId must be an ID; roleId accepts an exact ID or exact role name."),
 
@@ -312,7 +319,7 @@ internal sealed class QuorumAgentToolCatalog(
                     ParseDiscordId(channelId, nameof(channelId)),
                     new Dictionary<string, string>
                     {
-                        ["role_id"] = (await ResolveRoleIdAsync(guildId, roleId)).ToString(),
+                        ["role_id"] = (await ResolveRoleIdAsync(guildId, requesterId, roleId)).ToString(),
                         ["allow"] = allow,
                         ["deny"] = deny
                     }))),
@@ -324,7 +331,7 @@ internal sealed class QuorumAgentToolCatalog(
                 await ProposeAsync(guildId, requesterId, approvalChannelId, new(
                     ChangeActionType.RemoveRoleChannelOverwrite,
                     ParseDiscordId(channelId, nameof(channelId)),
-                    new Dictionary<string, string> { ["role_id"] = (await ResolveRoleIdAsync(guildId, roleId)).ToString() }))),
+                    new Dictionary<string, string> { ["role_id"] = (await ResolveRoleIdAsync(guildId, requesterId, roleId)).ToString() }))),
             "propose_remove_role_channel_overwrite",
             "HIGH-RISK TOOL. Create a same-chat approval request to remove one role-specific channel overwrite."),
 
@@ -457,11 +464,32 @@ internal sealed class QuorumAgentToolCatalog(
         result.CollectedAt
     };
 
+    private static QuorumReadCapability ReadCapabilityForSection(string section) => section.Trim().ToLowerInvariant() switch
+    {
+        "overview" or "guild" => QuorumReadCapability.Overview,
+        "roles" => QuorumReadCapability.Roles,
+        "channels" or "permissions" or "overwrites" => QuorumReadCapability.Channels,
+        "emojis" or "stickers" => QuorumReadCapability.Expressions,
+        "events" or "scheduled_events" => QuorumReadCapability.Events,
+        "voice" or "voice_states" => QuorumReadCapability.VoiceStates,
+        "bans" => QuorumReadCapability.Bans,
+        "invites" => QuorumReadCapability.Invites,
+        "integrations" => QuorumReadCapability.Integrations,
+        "webhooks" => QuorumReadCapability.Webhooks,
+        "automod" or "automod_rules" => QuorumReadCapability.AutoMod,
+        "audit" or "audit_log" => QuorumReadCapability.AuditLog,
+        "onboarding" => QuorumReadCapability.Onboarding,
+        "welcome" or "welcome_screen" => QuorumReadCapability.WelcomeScreen,
+        "coverage" => QuorumReadCapability.Coverage,
+        _ => throw new ArgumentException($"Unknown section '{section}'. Valid sections: {string.Join(", ", SectionNames)}.")
+    };
+
     private static ulong ParseDiscordId(string value, string name) =>
         ulong.TryParse(value, out var parsed) ? parsed : throw new ArgumentException($"{name} must be a Discord snowflake ID encoded as a string.");
 
-    private async Task<ulong> ResolveRoleIdAsync(ulong guildId, string selector)
+    private async Task<ulong> ResolveRoleIdAsync(ulong guildId, ulong requesterId, string selector)
     {
+        await authorization.DemandResourceLookupAsync(guildId, requesterId, "role");
         var snapshot = await reads.GetLatestAsync(guildId);
         var roles = snapshot.Roles.Data ?? throw new InvalidOperationException("Role configuration is unavailable.");
         if (ulong.TryParse(selector, out var id))
@@ -478,8 +506,9 @@ internal sealed class QuorumAgentToolCatalog(
         };
     }
 
-    private async Task<ulong> ResolveChannelIdAsync(ulong guildId, string selector)
+    private async Task<ulong> ResolveChannelIdAsync(ulong guildId, ulong requesterId, string selector)
     {
+        await authorization.DemandResourceLookupAsync(guildId, requesterId, "channel");
         var snapshot = await reads.GetLatestAsync(guildId);
         var channels = snapshot.Channels.Data ?? throw new InvalidOperationException("Channel configuration is unavailable.");
         if (ulong.TryParse(selector, out var id))

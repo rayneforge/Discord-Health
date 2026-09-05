@@ -6,11 +6,12 @@ Quorum follows the reference projects' agent/tool separation while binding every
 Discord interaction
   -> Quorum conversational agent
      -> request-scoped tool catalog (guild ID + requester ID)
+        -> per-tool requester authorization
         -> typed read services
         -> typed write proposal services
            -> durable pending approval card in the invoking chat
               -> administrator Discord component approval
-                 -> validate -> compare -> execute -> verify
+                 -> reauthorize requester -> validate -> compare -> execute -> verify
 ```
 
 The model never receives a generic Discord client, arbitrary HTTP client, or a tool argument that selects the guild or requester. Discord.Net remains inside `DiscordAdapter`. Read tools return typed snapshots and explicit collector gaps. Write-shaped tools may create proposals, but only the approval handler can call an approved executor.
@@ -20,6 +21,10 @@ The conversational runtime follows GoodyAI's Microsoft Agent Framework pattern: 
 ## Safety invariants
 
 - Read operations may run immediately.
+- Every read and proposed mutation is permission-trimmed to the invoking user.
+- Both requester and bot permissions are checked, including target-channel overwrites and Discord role hierarchy.
+- Requesters cannot grant permissions they do not possess or use Quorum to elevate themselves.
+- Requester authorization is checked again after approval and before execution.
 - A write-shaped agent function never directly changes Discord.
 - Guild and requester scope come from the Discord interaction, not model input.
 - Unsupported mutations are reported as gaps, never simulated through a different tool.
